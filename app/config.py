@@ -1,14 +1,15 @@
-"""P0 knobs. Live / broker mode is not implemented — SHADOW_ONLY must stay true."""
+"""P0/P1 knobs. Live / broker mode is not implemented — SHADOW_ONLY must stay true."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from typing import Self
+from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.timeutil import parse_clock
+from app.timeutil import NY, parse_clock
 
 
 class Settings(BaseSettings):
@@ -34,7 +35,19 @@ class Settings(BaseSettings):
         default="09:00-12:00",
         validation_alias=AliasChoices("SESSION_NY", "CHOCH_SESSION_NY"),
     )
-    ny_session_enabled: bool = Field(default=False)
+    ny_session_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "NY_SESSION_ENABLED",
+            "SESSION_NY_ENABLED",
+            "CHOCH_NY_SESSION_ENABLED",
+        ),
+    )
+    ny_timezone: str = Field(
+        default="America/New_York",
+        validation_alias=AliasChoices("NY_TIMEZONE", "CHOCH_NY_TIMEZONE"),
+    )
+    ny_flatten_clock: str = Field(default="12:00")
     risk_usd: float = Field(
         default=100.0,
         validation_alias=AliasChoices("RISK_USD", "CHOCH_RISK_USD"),
@@ -56,6 +69,10 @@ class Settings(BaseSettings):
     two_year_flat: bool = False
     red_folder_buffer_min: int = 30
     news_stub_path: str = "data/news_stub.json"
+    news_source: str = Field(
+        default="stub",
+        validation_alias=AliasChoices("NEWS_SOURCE", "CHOCH_NEWS_SOURCE"),
+    )
     db_path: str = "data/choch.db"
     swing_left: int = 2
     swing_right: int = 2
@@ -71,11 +88,18 @@ class Settings(BaseSettings):
             return tuple(str(v).upper() for v in value)
         return value
 
+    @field_validator("ny_session_enabled", mode="before")
+    @classmethod
+    def _flag(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return value
+
     @model_validator(mode="after")
     def _require_shadow(self) -> Self:
         if not self.shadow_only:
             raise ValueError(
-                "Choch Rocket P0 is shadow-only. SHADOW_ONLY must remain true; "
+                "Choch Rocket is shadow-only. SHADOW_ONLY must remain true; "
                 "live broker orders are out of scope."
             )
         return self
@@ -86,12 +110,28 @@ class Settings(BaseSettings):
         return parse_clock(start_s.strip()), parse_clock(end_s.strip())
 
     @property
+    def ny_window(self) -> tuple:
+        start_s, end_s = self.session_ny.split("-")
+        return parse_clock(start_s.strip()), parse_clock(end_s.strip())
+
+    @property
+    def ny_zone(self) -> ZoneInfo:
+        try:
+            return ZoneInfo(self.ny_timezone)
+        except Exception:
+            return NY
+
+    @property
     def asia_window(self) -> tuple:
         return parse_clock(self.asia_start), parse_clock(self.asia_end)
 
     @property
     def flatten_time(self):
         return parse_clock(self.flatten_clock)
+
+    @property
+    def ny_flatten_time(self):
+        return parse_clock(self.ny_flatten_clock)
 
     @property
     def be_trigger_r(self) -> float:

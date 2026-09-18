@@ -38,6 +38,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "shadow_only": cfg.shadow_only,
             "pairs": list(cfg.pairs),
             "session_london": cfg.session_london,
+            "session_ny": cfg.session_ny,
+            "ny_session_enabled": cfg.ny_session_enabled,
+            "ny_timezone": cfg.ny_timezone,
+            "news_source": cfg.news_source,
         }
 
     @app.get("/", response_class=HTMLResponse)
