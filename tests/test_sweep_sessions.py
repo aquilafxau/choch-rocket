@@ -5,10 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.config import Settings
+from app.db import Store
 from app.ingest.synthetic import build_multi_day_setup_a_bars, build_setup_a_bars
 from app.models import Bar
 from app.pipeline import Pipeline
-from app.structure.sweep import asia_range, find_sweep
+from app.structure.sweep import (
+    asia_range,
+    find_sweep,
+    hunt_window_bars,
+    in_window_equal_levels,
+    prior_asia_bars,
+    session_window_bars,
+)
 from app.timeutil import AEST, aest_date
 
 
@@ -138,3 +146,125 @@ def test_multi_day_replay_emits_multiple_signals(pipeline: Pipeline):
     assert len(signals) >= 2, f"latch regression: expected signals across days, got {signals!r}"
     assert len(days) >= 2, f"signals must land on more than one AEST day, got {days} from {signals!r}"
     assert all("sweep" in s.tags for s in signals)
+
+
+def _eqh_asia(day: datetime, *, wick_high: float, eqh: float, floor: float) -> list[Bar]:
+    """Asia path with one unique wick high plus two confirmed equal swing highs."""
+    start = day.replace(hour=7, minute=0, second=0, microsecond=0)
+    mid = (eqh + floor) / 2
+    spec: list[tuple[float, float]] = [
+        (wick_high, mid),  # unique Asia high (index 0 — not a confirmed swing)
+        (mid + 0.00020, mid - 0.00020),
+        (mid + 0.00015, mid - 0.00015),
+        (eqh, floor + 0.00010),  # EQH 1
+        (mid + 0.00018, mid - 0.00010),
+        (mid + 0.00012, mid - 0.00012),
+        (mid + 0.00014, mid - 0.00014),
+        (eqh, floor + 0.00010),  # EQH 2
+        (mid + 0.00016, mid - 0.00010),
+        (mid + 0.00012, mid - 0.00012),
+        (mid + 0.00010, floor),
+        (mid + 0.00008, mid - 0.00010),
+    ]
+    out: list[Bar] = []
+    for i, (h, l) in enumerate(spec):
+        ts = start + timedelta(minutes=15 * i)
+        out.append(_bar(ts, mid, h, l, mid))
+    return out
+
+
+def _rising_asia(day: datetime, start_px: float, end_high: float) -> list[Bar]:
+    """Monotonic Asia highs — no EQH — with ``end_high`` as the session high."""
+    start = day.replace(hour=7, minute=0, second=0, microsecond=0)
+    n = 10
+    out: list[Bar] = []
+    for i in range(n):
+        ts = start + timedelta(minutes=15 * i)
+        h = start_px + (end_high - start_px) * (i + 1) / n
+        o = h - 0.00020
+        out.append(_bar(ts, o, h, o - 0.00010, o + 0.00005))
+    return out
+
+
+def test_session_window_helpers_never_cross_days():
+    settings = Settings()
+    bars = _two_day_mega_range_fixture()
+    day1 = aest_date(bars[0].ts)
+    day2 = aest_date(bars[-1].ts)
+    start, end = settings.asia_window
+
+    asia1 = session_window_bars(bars, day1, start, end)
+    asia2 = prior_asia_bars(bars, settings, day2)
+    hunt1 = hunt_window_bars(bars, settings, day1)
+    hunt2 = hunt_window_bars(bars, settings, day2)
+
+    assert asia1 and all(aest_date(b.ts) == day1 for b in asia1)
+    assert asia2 and all(aest_date(b.ts) == day2 for b in asia2)
+    assert hunt1 and all(aest_date(b.ts) == day1 and b.ts.hour >= 16 for b in hunt1)
+    assert hunt2 and all(aest_date(b.ts) == day2 and b.ts.hour >= 16 for b in hunt2)
+    assert {aest_date(b.ts) for b in prior_asia_bars(bars, settings)} == {day2}
+
+
+def test_in_window_eqh_sweep_without_taking_asia_high():
+    settings = Settings()
+    day = datetime(2026, 3, 10, tzinfo=AEST)
+    asia = _eqh_asia(day, wick_high=1.08600, eqh=1.08450, floor=1.08200)
+    eqh, eql = in_window_equal_levels(asia, settings)
+    assert eqh is not None
+    assert abs(eqh - 1.08450) < 1e-9
+    assert eql is None or eql >= 1.08200 - 1e-9
+
+    # London takes EQH but stays below the unique Asia wick high.
+    pierce = _london_pierce(day, 1.08480, kind="high")
+    sweep = find_sweep([*asia, pierce], settings)
+    assert sweep is not None
+    assert sweep.kind == "high"
+    assert sweep.source == "eqh"
+    assert abs(sweep.extreme - 1.08480) < 1e-9
+    assert abs(sweep.asia_high - 1.08600) < 1e-9
+
+
+def test_eqh_from_prior_day_does_not_leak():
+    settings = Settings()
+    day1 = datetime(2026, 3, 10, tzinfo=AEST)
+    day2 = datetime(2026, 3, 11, tzinfo=AEST)
+    day1_asia = _eqh_asia(day1, wick_high=1.08600, eqh=1.08450, floor=1.08200)
+    day1_pierce = _london_pierce(day1, 1.08480, kind="high")
+    # Day 2 Asia high is *above* day-1 EQH; London prints 1.0850 — would sweep
+    # leaked day-1 EQH (1.08450) but does not take day-2 Asia high (1.09000)
+    # and day 2 has no EQH of its own.
+    day2_asia = _rising_asia(day2, start_px=1.08100, end_high=1.09000)
+    day2_london = _london_pierce(day2, 1.08500, kind="high")
+    bars = [*day1_asia, day1_pierce, *day2_asia, day2_london]
+
+    assert in_window_equal_levels(day2_asia, settings) == (None, None)
+    leaked = find_sweep(bars, settings)
+    assert leaked is None, f"day-1 EQH leaked into day 2: {leaked!r}"
+
+    day1_sweep = find_sweep(bars, settings, session_day=aest_date(day1))
+    assert day1_sweep is not None
+    assert day1_sweep.source == "eqh"
+
+
+def test_month_scale_replay_emits_plausible_london_setup_count(tmp_settings: Settings):
+    """Aug-like ~21 London days must not collapse to ~1 signal/month."""
+    bars = build_multi_day_setup_a_bars(days=21)
+    store = Store(tmp_settings.db_path)
+    signals = Pipeline(store, tmp_settings).replay(bars)
+    days = {aest_date(s.ts) for s in signals}
+    assert len(bars) > 1500
+    assert len(signals) >= 15, f"expected a month of setups, got {len(signals)}: {signals!r}"
+    assert len(days) >= 15
+    assert all(s.decision in {"GO", "HALF"} for s in signals)
+
+
+def test_multi_day_against_trend_still_veto(tmp_settings: Settings):
+    bars = build_multi_day_setup_a_bars(days=3, htf="bullish", setup_side="short")
+    store = Store(tmp_settings.db_path)
+    pipeline = Pipeline(store, tmp_settings)
+    signals = pipeline.replay(bars)
+    assert signals, "against-trend path should still emit VETO (visible, not silent)"
+    assert all(s.decision == "VETO" for s in signals)
+    assert all(s.veto_reason == "against_trend" for s in signals)
+    assert store.list_trades() == []
+

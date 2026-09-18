@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     pip_size: float = 0.0001
     asia_start: str = "07:00"
     asia_end: str = "15:59"
+    eq_pips: float = 3.0
     flatten_clock: str = "21:00"
     two_year_flat: bool = False
     red_folder_buffer_min: int = 30
@@ -140,6 +141,11 @@ class Settings(BaseSettings):
     @property
     def sl_buffer(self) -> float:
         return self.sl_buffer_pips * self.pip_size
+
+    @property
+    def eq_tolerance(self) -> float:
+        """Max distance between two swings to count as EQH/EQL (session-window only)."""
+        return self.eq_pips * self.pip_size
 
     def allowed_symbol(self, symbol: str) -> bool:
         return symbol.upper().replace("/", "") in self.pairs

@@ -35,6 +35,7 @@ class SweepEvent(BaseModel):
     extreme: float
     asia_high: float
     asia_low: float
+    source: Literal["asia", "eqh", "eql"] = "asia"
 
 
 class ChochEvent(BaseModel):
