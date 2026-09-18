@@ -8,8 +8,9 @@ across the whole CSV:
 - **EQH/EQL** from confirmed swings inside those same-day windows only
 - Hunt window = same-day post-Asia (London and late NY)
 
-A pierce of that day's Asia/London H/L or of in-window EQH/EQL can fire once
-per eligible session. Earlier days are ignored.
+A pierce of that day's prior-Asia H/L or of EQH/EQL formed in the Asia or
+London window can fire once per eligible session. Earlier days are ignored.
+``london_range`` is the current London H/L for that same day only.
 """
 
 from __future__ import annotations
