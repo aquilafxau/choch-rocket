@@ -143,6 +143,41 @@ def build_setup_a_bars(
     return [by_ts[ts] for ts in sorted(by_ts)]
 
 
+def build_multi_day_setup_a_bars(
+    *,
+    days: int = 3,
+    start: datetime | None = None,
+    symbol: str = "EURUSD",
+    htf: Trend = "bearish",
+    setup_side: Side = "short",
+) -> list[Bar]:
+    """Concatenate N weekday Setup A paths so multi-day sweep latch can be tested.
+
+    Each AEST calendar day has its own Asia range and London pierce. History is
+    strictly sequential (no lookahead). Weekend days are skipped so London
+    session days stay Mon–Fri.
+    """
+    if days < 1:
+        raise ValueError("days must be >= 1")
+    start = start or datetime(2026, 3, 10, tzinfo=AEST)
+    cursor = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    out: list[Bar] = []
+    built = 0
+    while built < days:
+        if cursor.weekday() < 5:
+            out.extend(
+                build_setup_a_bars(
+                    symbol=symbol,
+                    day=cursor,
+                    htf=htf,
+                    setup_side=setup_side,
+                )
+            )
+            built += 1
+        cursor += timedelta(days=1)
+    return out
+
+
 def build_ny_setup_a_bars(
     *,
     symbol: str = "EURUSD",
