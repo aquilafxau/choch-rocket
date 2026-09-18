@@ -1,45 +1,209 @@
-"""Asia/session liquidity sweep. No sweep = no trade."""
+"""Asia/session liquidity sweep. No sweep = no trade.
+
+Ranges are **session-scoped** to one AEST calendar day — never a mega high/low
+across the whole CSV:
+
+- **Prior Asia** ``07:00–15:59`` AEST on that day → session H/L
+- **Current London** ``16:00–20:59`` AEST on that day → session H/L
+- **EQH/EQL** from confirmed swings inside those same-day windows only
+- Hunt window = same-day post-Asia (London and late NY)
+
+A pierce of that day's prior-Asia H/L or of EQH/EQL formed in the Asia or
+London window can fire once per eligible session. Earlier days are ignored.
+``london_range`` is the current London H/L for that same day only.
+"""
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
+
 from app.config import Settings
 from app.models import Bar, SweepEvent
-from app.timeutil import on_clock, to_aest
+from app.structure.swings import confirmed_swings
+from app.timeutil import aest_date, on_clock, to_aest
 
 
-def asia_range(bars: list[Bar], settings: Settings) -> tuple[float, float, list[Bar]] | None:
+def _aest_clock(ts: datetime) -> time:
+    return to_aest(ts).timetz().replace(tzinfo=None)
+
+
+def _session_day(bars: list[Bar], session_day: date | None) -> date | None:
+    if session_day is not None:
+        return session_day
+    if not bars:
+        return None
+    return aest_date(bars[-1].ts)
+
+
+def session_window_bars(
+    bars: list[Bar],
+    session_day: date,
+    start: time,
+    end: time,
+    *,
+    end_exclusive: bool = False,
+) -> list[Bar]:
+    """Bars on a single AEST session day whose clock sits in ``[start, end]``."""
+    return [
+        b
+        for b in bars
+        if aest_date(b.ts) == session_day and on_clock(b.ts, start, end, end_exclusive=end_exclusive)
+    ]
+
+
+def prior_asia_bars(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> list[Bar]:
+    """Prior Asia session on the given (or current) AEST day only."""
+    day = _session_day(bars, session_day)
+    if day is None:
+        return []
     start, end = settings.asia_window
-    asia = [b for b in bars if on_clock(b.ts, start, end)]
+    return session_window_bars(bars, day, start, end)
+
+
+def hunt_window_bars(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> list[Bar]:
+    """Same-day post-Asia bars (London and late NY on this AEST date)."""
+    day = _session_day(bars, session_day)
+    if day is None:
+        return []
+    _, asia_end = settings.asia_window
+    return [
+        b for b in bars if aest_date(b.ts) == day and _aest_clock(b.ts) > asia_end
+    ]
+
+
+def current_london_bars(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> list[Bar]:
+    """Current London session on the given (or current) AEST day only."""
+    day = _session_day(bars, session_day)
+    if day is None:
+        return []
+    start, end = settings.london_window
+    return session_window_bars(bars, day, start, end)
+
+
+def london_range(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> tuple[float, float, list[Bar]] | None:
+    """Current-London H/L for one AEST session day (default: date of the last bar).
+
+    Never aggregates London-clock bars across the whole CSV.
+    """
+    london = current_london_bars(bars, settings, session_day)
+    if not london:
+        return None
+    return max(b.high for b in london), min(b.low for b in london), london
+
+
+def in_window_equal_levels(
+    window: list[Bar],
+    settings: Settings,
+) -> tuple[float | None, float | None]:
+    """EQH / EQL from confirmed swings **inside one session window**.
+
+    Never looks at swings from other days or from the full-history series.
+    """
+    if len(window) < settings.swing_left + settings.swing_right + 1:
+        return None, None
+    swings = confirmed_swings(window, settings.swing_left, settings.swing_right)
+    tol = settings.eq_tolerance
+    highs = [s.price for s in swings if s.kind == "high"]
+    lows = [s.price for s in swings if s.kind == "low"]
+    return _paired_level(highs, tol, extreme="max"), _paired_level(lows, tol, extreme="min")
+
+
+def _paired_level(prices: list[float], tol: float, *, extreme: str) -> float | None:
+    best: float | None = None
+    for i, left in enumerate(prices):
+        for right in prices[i + 1 :]:
+            if abs(left - right) > tol + 1e-12:
+                continue
+            level = max(left, right) if extreme == "max" else min(left, right)
+            if best is None:
+                best = level
+            elif extreme == "max":
+                best = max(best, level)
+            else:
+                best = min(best, level)
+    return best
+
+
+def asia_range(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> tuple[float, float, list[Bar]] | None:
+    """Prior-Asia H/L for one AEST session day (default: date of the last bar).
+
+    Only that day's Asia-window bars are used. This is not a global aggregate
+    of every Asia-clock bar in the CSV.
+    """
+    asia = prior_asia_bars(bars, settings, session_day)
     if len(asia) < 4:
         return None
     return max(b.high for b in asia), min(b.low for b in asia), asia
 
 
-def find_sweep(bars: list[Bar], settings: Settings) -> SweepEvent | None:
-    rng = asia_range(bars, settings)
+def find_sweep(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> SweepEvent | None:
+    """First same-day hunt-window pierce of session-scoped Asia H/L or EQH/EQL.
+
+    Liquidity levels come from prior Asia and current London on ``session_day``
+    only (EQH/EQL from those windows, using bars before the pierce). Earlier
+    days cannot latch the result.
+    """
+    day = _session_day(bars, session_day)
+    if day is None:
+        return None
+    rng = asia_range(bars, settings, day)
     if rng is None:
         return None
-    asia_high, asia_low, _asia = rng
-    _, asia_end = settings.asia_window
-    post = [b for b in bars if to_aest(b.ts).timetz().replace(tzinfo=None) > asia_end]
+    asia_high, asia_low, asia = rng
+    london = current_london_bars(bars, settings, day)
+    post = hunt_window_bars(bars, settings, day)
     if not post:
         return None
 
     for bar in post:
-        if bar.high > asia_high + 1e-9:
+        # EQH/EQL from same-day Asia + London bars *before* this print (no lookahead).
+        prior_london = [b for b in london if b.ts < bar.ts]
+        eqh, eql = in_window_equal_levels(asia + prior_london, settings)
+
+        high_asia = bar.high > asia_high + 1e-9
+        low_asia = bar.low < asia_low - 1e-9
+        high_eqh = eqh is not None and bar.high > eqh + 1e-9
+        low_eql = eql is not None and bar.low < eql - 1e-9
+        if high_asia or high_eqh:
             return SweepEvent(
                 kind="high",
                 ts=bar.ts,
                 extreme=bar.high,
                 asia_high=asia_high,
                 asia_low=asia_low,
+                source="asia" if high_asia else "eqh",
             )
-        if bar.low < asia_low - 1e-9:
+        if low_asia or low_eql:
             return SweepEvent(
                 kind="low",
                 ts=bar.ts,
                 extreme=bar.low,
                 asia_high=asia_high,
                 asia_low=asia_low,
+                source="asia" if low_asia else "eql",
             )
     return None
