@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 from app.config import Settings
 from app.db import Store
@@ -11,6 +15,14 @@ from app.ingest.synthetic import build_setup_a_bars
 from app.models import Bar, StructureResult, SweepEvent, ChochEvent, POIZone
 from app.pipeline import Pipeline
 from app.timeutil import AEST
+
+
+@contextmanager
+def asgi_client(app: FastAPI) -> Iterator[httpx.Client]:
+    """httpx ASGI client — avoids Starlette TestClient's httpx/httpx2 deprecation."""
+    transport = httpx.ASGITransport(app=app)
+    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+        yield client
 
 
 @pytest.fixture

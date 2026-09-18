@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from fastapi.testclient import TestClient
-
 from app.config import Settings
 from app.db import Store
 from app.ingest.csv_loader import load_csv, write_csv
@@ -16,7 +14,7 @@ from app.pipeline import Pipeline
 from app.recommend.emit import emit
 from app.structure.detect import detect
 from app.timeutil import AEST, to_aest
-from tests.conftest import structure_stub
+from tests.conftest import asgi_client, structure_stub
 
 
 def test_setup_a_path_emits_go_or_half_with_tags(pipeline: Pipeline, setup_a_bars, tmp_path):
@@ -102,8 +100,8 @@ def test_stats_wr_matches_manual_count(pipeline: Pipeline, setup_a_bars, tmp_set
     app = create_app(tmp_settings)
     # Point the app at the same db the pipeline used.
     app.state.store = pipeline.store
-    client = TestClient(app)
-    payload = client.get("/stats").json()
+    with asgi_client(app) as client:
+        payload = client.get("/stats").json()
     assert payload["overall"]["n"] == len(trades)
     assert payload["overall"]["wins"] == wins
     assert abs(payload["overall"]["wr"] - expected_wr) < 1e-9
