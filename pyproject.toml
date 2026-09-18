@@ -4,6 +4,12 @@ version = "0.1.0"
 description = "Choch Rocket — Protrend M15 GO/HALF/VETO recommender with shadow sim"
 readme = "README.md"
 requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
@@ -29,6 +35,10 @@ packages = ["app"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+  "error::starlette.exceptions.StarletteDeprecationWarning",
+  "error:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 
 [tool.uv]
 package = true

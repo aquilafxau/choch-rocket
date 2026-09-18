@@ -10,7 +10,7 @@ Local-first Protrend structure monitor: **sweep → CHoCH/MSS → POI** → `GO`
 
 ## Local London paper session
 
-Requires **Python 3.12** and [uv](https://docs.astral.sh/uv/).
+Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/). Verified on 3.12 and 3.13 (including 3.13.5).
 
 ```bash
 uv sync

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from fastapi.testclient import TestClient
+import pytest
 
 from app.config import Settings
 from app.db import Store
@@ -16,7 +16,7 @@ from app.pipeline import Pipeline
 from app.recommend.emit import emit
 from app.structure.detect import detect
 from app.timeutil import AEST, to_aest
-from tests.conftest import structure_stub
+from tests.conftest import asgi_client, structure_stub
 
 
 def test_setup_a_path_emits_go_or_half_with_tags(pipeline: Pipeline, setup_a_bars, tmp_path):
@@ -94,7 +94,8 @@ def test_go_creates_sim_row_with_r_and_exit_reason(pipeline: Pipeline, setup_a_b
     assert trade.hold_minutes is not None
 
 
-def test_stats_wr_matches_manual_count(pipeline: Pipeline, setup_a_bars, tmp_settings: Settings):
+@pytest.mark.anyio
+async def test_stats_wr_matches_manual_count(pipeline: Pipeline, setup_a_bars, tmp_settings: Settings):
     pipeline.replay(setup_a_bars)
     trades = [t for t in pipeline.store.list_trades() if t.status == "closed"]
     wins = sum(1 for t in trades if (t.r_multiple or 0) > 0)
@@ -102,8 +103,8 @@ def test_stats_wr_matches_manual_count(pipeline: Pipeline, setup_a_bars, tmp_set
     app = create_app(tmp_settings)
     # Point the app at the same db the pipeline used.
     app.state.store = pipeline.store
-    client = TestClient(app)
-    payload = client.get("/stats").json()
+    async with asgi_client(app) as client:
+        payload = (await client.get("/stats")).json()
     assert payload["overall"]["n"] == len(trades)
     assert payload["overall"]["wins"] == wins
     assert abs(payload["overall"]["wr"] - expected_wr) < 1e-9
