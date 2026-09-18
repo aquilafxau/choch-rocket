@@ -69,7 +69,7 @@ def render_dashboard(summary: dict, signals: list[Signal], trades: list[SimTrade
 <body>
   <p class="banner">SHADOW ONLY — recommend + paper-sim. No broker. No live orders.</p>
   <h1>Choch Rocket</h1>
-  <p>EURUSD + AUDUSD · London 16:00–20:59 AEST · GET <a href="/stats">/stats</a> · <a href="/health">/health</a></p>
+  <p>EURUSD + AUDUSD · London 16:00–20:59 AEST · NY 09:00–12:00 America/New_York (flag) · GET <a href="/stats">/stats</a> · <a href="/health">/health</a></p>
   {overall}
   {_nested("By pair", summary.get("by_pair") or {})}
   {_nested("By session", summary.get("by_session") or {})}

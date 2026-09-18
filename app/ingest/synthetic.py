@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from app.models import Bar
-from app.timeutil import AEST
+from app.timeutil import AEST, NY
 
 Trend = Literal["bullish", "bearish"]
 Side = Literal["long", "short"]
@@ -135,6 +135,121 @@ def build_setup_a_bars(
             t += timedelta(minutes=15)
 
     # Ensure every 15m slot exists through flatten.
+    by_ts = dict(bars)
+    for ts in _iter_m15(start, end):
+        if ts not in by_ts:
+            prev = by_ts[max(k for k in by_ts if k < ts)]
+            by_ts[ts] = _bar(ts, prev.close, prev.close + 0.00005, prev.close - 0.00005, prev.close, symbol)
+    return [by_ts[ts] for ts in sorted(by_ts)]
+
+
+def build_ny_setup_a_bars(
+    *,
+    symbol: str = "EURUSD",
+    ny_day: datetime | None = None,
+    htf: Trend = "bearish",
+    setup_side: Side = "short",
+) -> list[Bar]:
+    """Setup A that completes in the NY window (default 09:00 ET, Tuesday 2026-03-10).
+
+    Bars are stored timezone-aware (AEST wall after convert). Sweep is at NY open
+    so London hours stay inside the Asia range (no London sweep).
+    """
+    ny_day = ny_day or datetime(2026, 3, 10, tzinfo=NY)
+    ny_open = ny_day.replace(hour=9, minute=0, second=0, microsecond=0)
+    ny_flat = ny_day.replace(hour=12, minute=0, second=0, microsecond=0)
+    sweep_ts = ny_open.astimezone(AEST)
+    flatten = ny_flat.astimezone(AEST)
+    start = sweep_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    if start > sweep_ts:
+        start = start - timedelta(days=1)
+    end = flatten + timedelta(minutes=15)
+
+    if htf == "bearish":
+        overnight = interpolate(start, start.replace(hour=8), 1.09200, 1.08520, symbol)
+    else:
+        overnight = interpolate(start, start.replace(hour=8), 1.07000, 1.08520, symbol)
+
+    asia_end = start.replace(hour=16, minute=0)
+    asia_end_px = 1.08380 if htf == "bearish" else 1.08620
+    asia_quiet = interpolate(start.replace(hour=8), asia_end, 1.08520, asia_end_px, symbol, wick=0.00008)
+    hold = interpolate(asia_end, sweep_ts, asia_end_px, 1.08420, symbol, wick=0.00006)
+    bars = {**overnight, **asia_quiet, **hold}
+
+    swing_low_ts = sweep_ts - timedelta(minutes=30)
+    swing_pre = sweep_ts - timedelta(minutes=60)
+    if swing_pre in bars:
+        bars[swing_pre] = _bar(swing_pre, 1.08440, 1.08470, 1.08400, 1.08420, symbol)
+    if swing_pre + timedelta(minutes=15) in bars:
+        ts = swing_pre + timedelta(minutes=15)
+        bars[ts] = _bar(ts, 1.08420, 1.08450, 1.08395, 1.08410, symbol)
+    bars[swing_low_ts] = _bar(swing_low_ts, 1.08410, 1.08430, 1.08390, 1.08400, symbol)
+    swing_post = sweep_ts - timedelta(minutes=15)
+    bars[swing_post] = _bar(swing_post, 1.08400, 1.08450, 1.08395, 1.08430, symbol)
+
+    asia_high = max(
+        b.high
+        for ts, b in bars.items()
+        if ts.astimezone(AEST).date() == start.date() and 7 <= ts.astimezone(AEST).hour <= 15
+    )
+    if setup_side == "short":
+        sweep = _bar(sweep_ts, 1.08430, max(asia_high + 0.00045, 1.08620), 1.08420, 1.08500, symbol)
+        choch_ts = sweep_ts + timedelta(minutes=15)
+        choch = _bar(choch_ts, 1.08500, 1.08510, 1.08190, 1.08210, symbol)
+        fvg_ts = sweep_ts + timedelta(minutes=30)
+        fvg = _bar(fvg_ts, 1.08210, 1.08220, 1.08170, 1.08190, symbol)
+        retrace_ts = sweep_ts + timedelta(minutes=45)
+        retrace = _bar(retrace_ts, 1.08190, 1.08340, 1.08180, 1.08310, symbol)
+        fill_ts = sweep_ts + timedelta(hours=1)
+        fill = _bar(fill_ts, 1.08300, 1.08330, 1.08140, 1.08160, symbol)
+        bars[sweep_ts] = sweep
+        bars[choch_ts] = choch
+        bars[fvg_ts] = fvg
+        bars[retrace_ts] = retrace
+        bars[fill_ts] = fill
+        runner = fill.close
+        t = fill_ts + timedelta(minutes=15)
+        while t <= flatten:
+            if t == fill_ts + timedelta(minutes=15):
+                bars[t] = _bar(t, runner, runner + 0.00010, 1.07900, 1.07920, symbol)
+                runner = 1.07920
+            else:
+                nxt = runner - 0.00008
+                bars[t] = _bar(t, runner, runner + 0.00006, nxt - 0.00004, nxt, symbol)
+                runner = nxt
+            t += timedelta(minutes=15)
+    else:
+        asia_low = min(
+            b.low
+            for ts, b in bars.items()
+            if ts.astimezone(AEST).date() == start.date() and 7 <= ts.astimezone(AEST).hour <= 15
+        )
+        sweep = _bar(sweep_ts, 1.08440, 1.08460, min(asia_low - 0.00045, 1.08220), 1.08380, symbol)
+        choch_ts = sweep_ts + timedelta(minutes=15)
+        choch = _bar(choch_ts, 1.08380, 1.08720, 1.08370, 1.08700, symbol)
+        fvg_ts = sweep_ts + timedelta(minutes=30)
+        fvg = _bar(fvg_ts, 1.08700, 1.08740, 1.08690, 1.08720, symbol)
+        retrace_ts = sweep_ts + timedelta(minutes=45)
+        retrace = _bar(retrace_ts, 1.08720, 1.08730, 1.08560, 1.08580, symbol)
+        fill_ts = sweep_ts + timedelta(hours=1)
+        fill = _bar(fill_ts, 1.08590, 1.08780, 1.08570, 1.08750, symbol)
+        bars[sweep_ts] = sweep
+        bars[choch_ts] = choch
+        bars[fvg_ts] = fvg
+        bars[retrace_ts] = retrace
+        bars[fill_ts] = fill
+        runner = fill.close
+        t = fill_ts + timedelta(minutes=15)
+        while t <= flatten:
+            if t == fill_ts + timedelta(minutes=15):
+                bars[t] = _bar(t, runner, 1.09040, runner - 0.00010, 1.09020, symbol)
+                runner = 1.09020
+            else:
+                nxt = runner + 0.00008
+                bars[t] = _bar(t, runner, nxt + 0.00004, runner - 0.00006, nxt, symbol)
+                runner = nxt
+            t += timedelta(minutes=15)
+
     by_ts = dict(bars)
     for ts in _iter_m15(start, end):
         if ts not in by_ts:

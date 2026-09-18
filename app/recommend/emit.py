@@ -11,6 +11,13 @@ from app.models import Signal, StructureResult
 from app.rails.gate import gate
 
 
+def _tags_with_session(tags: list[str], session: str | None) -> list[str]:
+    out = list(tags)
+    if session and session not in out:
+        out.append(session)
+    return out
+
+
 def emit(structure: StructureResult, settings: Settings, store: Store, calendar=None) -> Signal:
     decision, veto_reason, session, risk = gate(structure, settings, store, calendar=calendar)
     return Signal(
@@ -25,7 +32,7 @@ def emit(structure: StructureResult, settings: Settings, store: Store, calendar=
         sl=None if decision == "VETO" else structure.sl,
         tp=None,
         session=session or "none",
-        tags=list(structure.tags),
+        tags=_tags_with_session(structure.tags, session),
         planned_risk_usd=None if decision == "VETO" else risk,
         signal_bar_ts=structure.retrace_bar_ts,
         sweep_extreme=structure.sweep.extreme,

@@ -8,6 +8,7 @@ from datetime import datetime
 from app.config import Settings
 from app.db import Store
 from app.models import Bar, Signal, SimTrade
+from app.rails.sessions import should_flatten
 from app.timeutil import to_aest
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -91,7 +92,7 @@ class SimEngine:
     def _manage(self, trade: SimTrade, bar: Bar) -> None:
         if trade.fill_price is None or trade.fill_ts is None:
             return
-        if _is_flatten_bar(bar, self.settings):
+        if should_flatten(bar, self.settings, trade.session):
             self._close(trade, bar.ts, bar.open, "session_end")
             return
 
@@ -134,11 +135,6 @@ class SimEngine:
         trade.hold_minutes = hold
         trade.status = "closed"
         self.store.insert_trade(trade)
-
-
-def _is_flatten_bar(bar: Bar, settings: Settings) -> bool:
-    local = to_aest(bar.ts).time().replace(tzinfo=None)
-    return local >= settings.flatten_time
 
 
 def _reload(store: Store, trade_id: str) -> SimTrade | None:

@@ -9,7 +9,7 @@ from pathlib import Path
 from app.config import Settings
 from app.db import Store
 from app.ingest.csv_loader import load_csv, write_csv
-from app.ingest.synthetic import build_setup_a_bars
+from app.ingest.synthetic import build_ny_setup_a_bars, build_setup_a_bars
 from app.pipeline import Pipeline
 from app.stats.compute import summarize
 
@@ -19,13 +19,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--csv", help="M15 OHLC CSV path")
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--db", default=None)
-    parser.add_argument("--dump-fixture", metavar="PATH", help="Write the synthetic Setup A CSV and exit")
+    parser.add_argument("--dump-fixture", metavar="PATH", help="Write a synthetic Setup A CSV and exit")
+    parser.add_argument(
+        "--session",
+        choices=("london", "ny"),
+        default="london",
+        help="Which synthetic path to dump (london AEST vs NY 09:00 ET)",
+    )
     args = parser.parse_args(argv)
 
     if args.dump_fixture:
-        bars = build_setup_a_bars()
+        bars = build_ny_setup_a_bars() if args.session == "ny" else build_setup_a_bars()
         write_csv(args.dump_fixture, bars)
-        print(f"wrote {args.dump_fixture} ({len(bars)} bars)")
+        print(f"wrote {args.dump_fixture} ({len(bars)} bars, session={args.session})")
         return
 
     if not args.csv:
