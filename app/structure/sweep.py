@@ -3,11 +3,13 @@
 Ranges are **session-scoped** to one AEST calendar day — never a mega high/low
 across the whole CSV:
 
-- **Prior Asia** ``07:00–15:59`` AEST on that day → session H/L and in-window EQH/EQL
-- **Current London / post-Asia** (clock after ``asia_end`` on the same day) → hunt window
+- **Prior Asia** ``07:00–15:59`` AEST on that day → session H/L
+- **Current London** ``16:00–20:59`` AEST on that day → session H/L
+- **EQH/EQL** from confirmed swings inside those same-day windows only
+- Hunt window = same-day post-Asia (London and late NY)
 
-A pierce of that day's Asia H/L or of EQH/EQL formed inside that day's Asia
-window can fire once per eligible session. Earlier days are ignored.
+A pierce of that day's Asia/London H/L or of in-window EQH/EQL can fire once
+per eligible session. Earlier days are ignored.
 """
 
 from __future__ import annotations
@@ -76,6 +78,34 @@ def hunt_window_bars(
     ]
 
 
+def current_london_bars(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> list[Bar]:
+    """Current London session on the given (or current) AEST day only."""
+    day = _session_day(bars, session_day)
+    if day is None:
+        return []
+    start, end = settings.london_window
+    return session_window_bars(bars, day, start, end)
+
+
+def london_range(
+    bars: list[Bar],
+    settings: Settings,
+    session_day: date | None = None,
+) -> tuple[float, float, list[Bar]] | None:
+    """Current-London H/L for one AEST session day (default: date of the last bar).
+
+    Never aggregates London-clock bars across the whole CSV.
+    """
+    london = current_london_bars(bars, settings, session_day)
+    if not london:
+        return None
+    return max(b.high for b in london), min(b.low for b in london), london
+
+
 def in_window_equal_levels(
     window: list[Bar],
     settings: Settings,
@@ -130,10 +160,11 @@ def find_sweep(
     settings: Settings,
     session_day: date | None = None,
 ) -> SweepEvent | None:
-    """First same-day hunt-window pierce of that day's Asia H/L or in-window EQH/EQL.
+    """First same-day hunt-window pierce of session-scoped Asia H/L or EQH/EQL.
 
-    Earlier session days cannot latch the result: both the range and the hunt
-    window are filtered to ``session_day``.
+    Liquidity levels come from prior Asia and current London on ``session_day``
+    only (EQH/EQL from those windows, using bars before the pierce). Earlier
+    days cannot latch the result.
     """
     day = _session_day(bars, session_day)
     if day is None:
@@ -142,12 +173,16 @@ def find_sweep(
     if rng is None:
         return None
     asia_high, asia_low, asia = rng
-    eqh, eql = in_window_equal_levels(asia, settings)
+    london = current_london_bars(bars, settings, day)
     post = hunt_window_bars(bars, settings, day)
     if not post:
         return None
 
     for bar in post:
+        # EQH/EQL from same-day Asia + London bars *before* this print (no lookahead).
+        prior_london = [b for b in london if b.ts < bar.ts]
+        eqh, eql = in_window_equal_levels(asia + prior_london, settings)
+
         high_asia = bar.high > asia_high + 1e-9
         low_asia = bar.low < asia_low - 1e-9
         high_eqh = eqh is not None and bar.high > eqh + 1e-9

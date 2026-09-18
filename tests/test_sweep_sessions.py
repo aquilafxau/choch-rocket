@@ -11,9 +11,11 @@ from app.models import Bar
 from app.pipeline import Pipeline
 from app.structure.sweep import (
     asia_range,
+    current_london_bars,
     find_sweep,
     hunt_window_bars,
     in_window_equal_levels,
+    london_range,
     prior_asia_bars,
     session_window_bars,
 )
@@ -204,6 +206,17 @@ def test_session_window_helpers_never_cross_days():
     assert hunt2 and all(aest_date(b.ts) == day2 and b.ts.hour >= 16 for b in hunt2)
     assert {aest_date(b.ts) for b in prior_asia_bars(bars, settings)} == {day2}
 
+    lon1 = current_london_bars(bars, settings, day1)
+    lon2 = london_range(bars, settings)
+    assert lon1 and all(aest_date(b.ts) == day1 for b in lon1)
+    assert lon2 is not None
+    lon2_high, lon2_low, lon2_bars = lon2
+    assert all(aest_date(b.ts) == day2 for b in lon2_bars)
+    assert abs(lon2_high - 1.08300) < 1e-9
+    # Mega London range would include day-1 pierce at 1.10100.
+    assert lon2_high < 1.10100 - 1e-9
+    assert lon2_low <= lon2_high
+
 
 def test_in_window_eqh_sweep_without_taking_asia_high():
     settings = Settings()
@@ -256,6 +269,81 @@ def test_month_scale_replay_emits_plausible_london_setup_count(tmp_settings: Set
     assert len(signals) >= 15, f"expected a month of setups, got {len(signals)}: {signals!r}"
     assert len(days) >= 15
     assert all(s.decision in {"GO", "HALF"} for s in signals)
+
+
+def test_in_window_eql_sweep_without_taking_asia_low():
+    settings = Settings()
+    day = datetime(2026, 3, 10, tzinfo=AEST)
+    # Mirror of EQH: unique Asia wick low plus two equal swing lows.
+    start = day.replace(hour=7, minute=0, second=0, microsecond=0)
+    mid = 1.08400
+    wick_low, eql, ceiling = 1.08100, 1.08250, 1.08500
+    spec = [
+        (mid, wick_low),
+        (mid + 0.00020, mid - 0.00020),
+        (mid + 0.00015, mid - 0.00015),
+        (ceiling - 0.00010, eql),
+        (mid + 0.00010, mid - 0.00010),
+        (mid + 0.00012, mid - 0.00012),
+        (mid + 0.00014, mid - 0.00014),
+        (ceiling - 0.00010, eql),
+        (mid + 0.00016, mid - 0.00010),
+        (mid + 0.00012, mid - 0.00012),
+        (ceiling, mid - 0.00010),
+        (mid + 0.00008, mid - 0.00010),
+    ]
+    asia = [_bar(start + timedelta(minutes=15 * i), mid, h, l, mid) for i, (h, l) in enumerate(spec)]
+    eqh, eq_low = in_window_equal_levels(asia, settings)
+    assert eq_low is not None
+    assert abs(eq_low - eql) < 1e-9
+
+    pierce = _london_pierce(day, 1.08220, kind="low")
+    sweep = find_sweep([*asia, pierce], settings)
+    assert sweep is not None
+    assert sweep.kind == "low"
+    assert sweep.source == "eql"
+    assert abs(sweep.extreme - 1.08220) < 1e-9
+    assert abs(sweep.asia_low - wick_low) < 1e-9
+    _ = eqh
+
+
+def test_london_window_eqh_is_session_scoped():
+    """EQH printed in current London (not Asia) still sweeps, and does not leak to day 2."""
+    settings = Settings()
+    day1 = datetime(2026, 3, 10, tzinfo=AEST)
+    day2 = datetime(2026, 3, 11, tzinfo=AEST)
+    asia1 = _rising_asia(day1, start_px=1.08100, end_high=1.09000)
+    asia2 = _rising_asia(day2, start_px=1.08100, end_high=1.09000)
+
+    def _london_eqh(day: datetime) -> list[Bar]:
+        start = day.replace(hour=16, minute=0, second=0, microsecond=0)
+        mid, eqh, floor = 1.08300, 1.08450, 1.08220
+        spec = [
+            (mid + 0.00010, mid - 0.00010),
+            (mid + 0.00012, mid - 0.00012),
+            (eqh, floor),
+            (mid + 0.00014, mid - 0.00010),
+            (mid + 0.00010, mid - 0.00010),
+            (eqh, floor),
+            (mid + 0.00012, mid - 0.00010),
+            (mid + 0.00010, mid - 0.00010),
+            (1.08480, mid - 0.00010),  # pierce EQH, stay below Asia 1.090
+        ]
+        return [_bar(start + timedelta(minutes=15 * i), mid, h, l, mid) for i, (h, l) in enumerate(spec)]
+
+    lon1 = _london_eqh(day1)
+    # Day 2 London never takes Asia or forms EQH — a leaked day-1 EQH at 1.08450
+    # would fire on this 1.08500 print.
+    lon2 = [_london_pierce(day2, 1.08500, kind="high")]
+    bars = [*asia1, *lon1, *asia2, *lon2]
+
+    sweep_day1 = find_sweep([*asia1, *lon1], settings)
+    assert sweep_day1 is not None
+    assert sweep_day1.source == "eqh"
+    assert aest_date(sweep_day1.ts) == aest_date(day1)
+
+    leaked = find_sweep(bars, settings)
+    assert leaked is None, f"London EQH leaked across days: {leaked!r}"
 
 
 def test_multi_day_against_trend_still_veto(tmp_settings: Settings):
