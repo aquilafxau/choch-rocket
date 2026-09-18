@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -17,11 +17,16 @@ from app.pipeline import Pipeline
 from app.timeutil import AEST
 
 
-@contextmanager
-def asgi_client(app: FastAPI) -> Iterator[httpx.Client]:
-    """httpx ASGI client — avoids Starlette TestClient's httpx/httpx2 deprecation."""
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@asynccontextmanager
+async def asgi_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """Supported httpx ASGI client (avoids Starlette TestClient httpx/httpx2 deprecation)."""
     transport = httpx.ASGITransport(app=app)
-    with httpx.Client(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
 
 
